@@ -1042,16 +1042,17 @@ def save_ctas_result(
     sql: str,
     database: str,
     name: str,
-    data_source: Optional[str],
-    categories: Optional[List[str]],
-    s3_output: Optional[str],
-    workgroup: Optional[str],
-    encryption: Optional[str],
-    kms_key: Optional[str],
-    use_threads: bool,
-    s3_additional_kwargs: Optional[Dict[str, Any]],
-    boto3_session: boto3.Session,
+    data_source: Optional[str] = None,
+    categories: Optional[List[str]] = None,
+    s3_output: Optional[str] = None,
+    workgroup: Optional[str] = None,
+    encryption: Optional[str] = None,
+    kms_key: Optional[str] = None,
+    use_threads: bool = True,
+    boto3_session: Optional[boto3.Session] = None,
+    s3_additional_kwargs: Optional[Dict[str, Any]] = None,
 ) -> _QueryMetadata:
+    boto3_session: boto3.Session = _utils.ensure_session(session=boto3_session)
     wg_config: _WorkGroupConfig = _get_workgroup_config(session=boto3_session, workgroup=workgroup)
     _s3_output: str = _get_s3_output(s3_output=s3_output, wg_config=wg_config, boto3_session=boto3_session)
     _s3_output = _s3_output[:-1] if _s3_output[-1] == "/" else _s3_output

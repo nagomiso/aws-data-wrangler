@@ -1038,4 +1038,86 @@ def read_sql_table(
     )
 
 
+def save_ctas_result(
+    sql: str,
+    database: str,
+    name: str,
+    data_source: Optional[str],
+    categories: Optional[List[str]],
+    s3_output: Optional[str],
+    workgroup: Optional[str],
+    encryption: Optional[str],
+    kms_key: Optional[str],
+    use_threads: bool,
+    s3_additional_kwargs: Optional[Dict[str, Any]],
+    boto3_session: boto3.Session,
+) -> _QueryMetadata:
+    wg_config: _WorkGroupConfig = _get_workgroup_config(session=boto3_session, workgroup=workgroup)
+    _s3_output: str = _get_s3_output(s3_output=s3_output, wg_config=wg_config, boto3_session=boto3_session)
+    _s3_output = _s3_output[:-1] if _s3_output[-1] == "/" else _s3_output
+    try:
+        name: str = catalog.sanitize_table_name(name)
+        path: str = f"{s3_output}/{name}"
+        ext_location: str = "\n" if wg_config.enforced is True else f",\n    external_location = '{path}'\n"
+        sql = (
+            f'CREATE TABLE "{name}"\n'
+            f"WITH(\n"
+            f"    format = 'Parquet',\n"
+            f"    parquet_compression = 'SNAPPY'"
+            f"{ext_location}"
+            f") AS\n"
+            f"{sql}"
+        )
+        _logger.debug("sql: %s", sql)
+        try:
+            query_id: str = _start_query_execution(
+                sql=sql,
+                wg_config=wg_config,
+                database=database,
+                data_source=data_source,
+                s3_output=s3_output,
+                workgroup=workgroup,
+                encryption=encryption,
+                kms_key=kms_key,
+                boto3_session=boto3_session,
+            )
+        except botocore.exceptions.ClientError as ex:
+            error: Dict[str, Any] = ex.response["Error"]
+            if error["Code"] == "InvalidRequestException" and "Exception parsing query" in error["Message"]:
+                raise exceptions.InvalidCtasApproachQuery(
+                    "Is not possible to wrap this query into a CTAS statement. Please use ctas_approach=False."
+                )
+            if error["Code"] == "InvalidRequestException" and "extraneous input" in error["Message"]:
+                raise exceptions.InvalidCtasApproachQuery(
+                    "Is not possible to wrap this query into a CTAS statement. Please use ctas_approach=False."
+                )
+            raise ex
+        _logger.debug("query_id: %s", query_id)
+        try:
+            return _get_query_metadata(
+                query_execution_id=query_id,
+                boto3_session=boto3_session,
+                categories=categories,
+                metadata_cache_manager=_cache_manager,
+            )
+        except exceptions.QueryFailed as ex:
+            msg: str = str(ex)
+            if "Column name" in msg and "specified more than once" in msg:
+                raise exceptions.InvalidCtasApproachQuery(
+                    f"Please, define distinct names for your columns OR pass ctas_approach=False. Root error message: {msg}"
+                )
+            if "Column name not specified" in msg:
+                raise exceptions.InvalidArgumentValue(
+                    "Please, define all columns names in your query. (E.g. 'SELECT MAX(col1) AS max_col1, ...')"
+                )
+            if "Column type is unknown" in msg:
+                raise exceptions.InvalidArgumentValue(
+                    "Please, don't leave undefined columns types in your query. You can cast to ensure it. "
+                    "(E.g. 'SELECT CAST(NULL AS INTEGER) AS MY_COL, ...')"
+                )
+            raise ex
+    finally:
+        catalog.delete_table_if_exists(database=database, table=name, boto3_session=boto3_session)
+
+
 _cache_manager = _LocalMetadataCacheManager()

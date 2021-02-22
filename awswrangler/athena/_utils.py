@@ -803,3 +803,22 @@ def get_query_execution(query_execution_id: str, boto3_session: Optional[boto3.S
         QueryExecutionId=query_execution_id,
     )
     return cast(Dict[str, Any], response["QueryExecution"])
+
+
+def _convert_to_ctas_query(
+    base_sql: str,
+    table_name: str,
+    s3_output: str,
+    wg_config: _WorkGroupConfig,
+) -> str:
+    path: str = f"{s3_output}/{table_name}"
+    ext_location: str = "\n" if wg_config.enforced is True else f",\n    external_location = '{path}'\n"
+    return (
+        f'CREATE TABLE "{table_name}"\n'
+        f"WITH(\n"
+        f"    format = 'Parquet',\n"
+        f"    parquet_compression = 'SNAPPY'"
+        f"{ext_location}"
+        f") AS\n"
+        f"{base_sql}"
+    )

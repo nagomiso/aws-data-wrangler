@@ -16,6 +16,7 @@ from awswrangler import _utils, catalog, exceptions, s3
 from awswrangler._config import apply_configs
 from awswrangler.athena._utils import (
     _apply_query_metadata,
+    _convert_to_ctas_query,
     _empty_dataframe_response,
     _get_query_metadata,
     _get_s3_output,
@@ -366,7 +367,7 @@ def _resolve_query_without_cache_ctas(
     sql: str,
     database: Optional[str],
     data_source: Optional[str],
-    s3_output: Optional[str],
+    s3_output: str,
     keep_files: bool,
     chunksize: Union[int, bool, None],
     categories: Optional[List[str]],
@@ -374,22 +375,12 @@ def _resolve_query_without_cache_ctas(
     workgroup: Optional[str],
     kms_key: Optional[str],
     wg_config: _WorkGroupConfig,
-    name: Optional[str],
+    name: str,
     use_threads: bool,
     s3_additional_kwargs: Optional[Dict[str, Any]],
     boto3_session: boto3.Session,
 ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
-    path: str = f"{s3_output}/{name}"
-    ext_location: str = "\n" if wg_config.enforced is True else f",\n    external_location = '{path}'\n"
-    sql = (
-        f'CREATE TABLE "{name}"\n'
-        f"WITH(\n"
-        f"    format = 'Parquet',\n"
-        f"    parquet_compression = 'SNAPPY'"
-        f"{ext_location}"
-        f") AS\n"
-        f"{sql}"
-    )
+    sql = _convert_to_ctas_query(base_sql=sql, table_name=name, s3_output=s3_output, wg_config=wg_config)
     _logger.debug("sql: %s", sql)
     try:
         query_id: str = _start_query_execution(
@@ -1036,6 +1027,164 @@ def read_sql_table(
         max_local_cache_entries=max_local_cache_entries,
         s3_additional_kwargs=s3_additional_kwargs,
     )
+
+
+def _copy_parquet_result(
+    database: str,
+    table_name: str,
+    query_metadata: _QueryMetadata,
+    copy_destination_path: str,
+    keep_files: bool,
+    use_threads: bool,
+    boto3_session: boto3.Session,
+    s3_additional_kwargs: Optional[Dict[str, Any]] = None,
+) -> None:
+    if query_metadata.manifest_location is None:
+        return
+    manifest_path: str = query_metadata.manifest_location
+    metadata_path: str = manifest_path.replace("-manifest.csv", ".metadata")
+    _logger.debug("manifest_path: %s", manifest_path)
+    _logger.debug("metadata_path: %s", metadata_path)
+    paths: List[str] = _extract_ctas_manifest_paths(path=manifest_path, boto3_session=boto3_session)
+    if not paths:
+        return
+    source_path = catalog.get_table_location(database=database, table=table_name, boto3_session=boto3_session)
+    s3.copy_objects(
+        paths=paths,
+        source_path=source_path,
+        target_path=copy_destination_path,
+        use_threads=use_threads,
+        boto3_session=boto3_session,
+        s3_additional_kwargs=s3_additional_kwargs,
+    )
+    if not keep_files:
+        s3.delete_objects(
+            paths=paths,
+            use_threads=use_threads,
+            boto3_session=boto3_session,
+            s3_additional_kwargs=s3_additional_kwargs,
+        )
+
+
+def _copy_csv_result(
+    s3_output: str,
+    copy_destination_path: str,
+    query_metadata: _QueryMetadata,
+    keep_files: bool,
+    use_threads: bool,
+    boto3_session: boto3.Session,
+    s3_additional_kwargs: Optional[Dict[str, Any]] = None,
+) -> None:
+    if query_metadata.output_location is None or query_metadata.output_location.endswith(".csv") is False:
+        return
+    path: str = query_metadata.output_location
+    s3.copy_objects(
+        paths=[path],
+        source_path=s3_output,
+        target_path=copy_destination_path,
+        use_threads=use_threads,
+        boto3_session=boto3_session,
+        s3_additional_kwargs=s3_additional_kwargs,
+    )
+    if not keep_files:
+        s3.delete_objects(
+            paths=[path],
+            use_threads=use_threads,
+            boto3_session=boto3_session,
+            s3_additional_kwargs=s3_additional_kwargs,
+        )
+
+
+def save_query_result(
+    sql: str,
+    database: str,
+    copy_destination_path: str,
+    ctas_approach: bool = True,
+    s3_output: Optional[str] = None,
+    workgroup: Optional[str] = None,
+    encryption: Optional[str] = None,
+    kms_key: Optional[str] = None,
+    keep_files: bool = True,
+    ctas_temp_table_name: Optional[str] = None,
+    use_threads: bool = True,
+    boto3_session: Optional[boto3.Session] = None,
+    max_cache_seconds: int = 0,
+    max_cache_query_inspections: int = 50,
+    max_remote_cache_entries: int = 50,
+    max_local_cache_entries: int = 100,
+    data_source: Optional[str] = None,
+    params: Optional[Dict[str, Any]] = None,
+    s3_additional_kwargs: Optional[Dict[str, Any]] = None,
+) -> None:
+    session: boto3.Session = _utils.ensure_session(session=boto3_session)
+    if params is None:
+        params = {}
+    for key, value in params.items():
+        sql = sql.replace(f":{key};", str(value))
+    wg_config: _WorkGroupConfig = _get_workgroup_config(session=session, workgroup=workgroup)
+    _s3_output: str = _get_s3_output(s3_output=s3_output, wg_config=wg_config, boto3_session=session)
+    _s3_output = _s3_output[:-1] if _s3_output[-1] == "/" else _s3_output
+    if ctas_approach is True:
+        if ctas_temp_table_name is not None:
+            name: str = catalog.sanitize_table_name(ctas_temp_table_name)
+        else:
+            name = f"temp_table_{uuid.uuid4().hex}"
+        sql = _convert_to_ctas_query(base_sql=sql, table_name=name, s3_output=_s3_output, wg_config=wg_config)
+        _logger.debug("sql: %s", sql)
+        try:
+            query_id: str = _start_query_execution(
+                sql=sql,
+                wg_config=wg_config,
+                database=database,
+                data_source=data_source,
+                s3_output=_s3_output,
+                workgroup=workgroup,
+                encryption=encryption,
+                kms_key=kms_key,
+                boto3_session=session,
+            )
+            query_metadata: _QueryMetadata = _get_query_metadata(
+                query_execution_id=query_id,
+                boto3_session=session,
+            )
+            _copy_parquet_result(
+                database=database,
+                table_name=name,
+                query_metadata=query_metadata,
+                copy_destination_path=copy_destination_path,
+                keep_files=keep_files,
+                use_threads=use_threads,
+                boto3_session=session,
+                s3_additional_kwargs=s3_additional_kwargs,
+            )
+        finally:
+            catalog.delete_table_if_exists(database=database, table=name, boto3_session=session)
+    else:
+        query_id: str = _start_query_execution(
+            sql=sql,
+            wg_config=wg_config,
+            database=database,
+            data_source=data_source,
+            s3_output=_s3_output,
+            workgroup=workgroup,
+            encryption=encryption,
+            kms_key=kms_key,
+            boto3_session=session,
+        )
+        query_metadata: _QueryMetadata = _get_query_metadata(
+            query_execution_id=query_id,
+            boto3_session=session,
+        )
+        _copy_csv_result(
+            s3_output=_s3_output,
+            copy_destination_path=copy_destination_path,
+            query_metadata=query_metadata,
+            keep_files=keep_files,
+            use_threads=use_threads,
+            boto3_session=session,
+            s3_additional_kwargs=s3_additional_kwargs,
+        )
+    _logger.debug("query_id: %s", query_id)
 
 
 _cache_manager = _LocalMetadataCacheManager()

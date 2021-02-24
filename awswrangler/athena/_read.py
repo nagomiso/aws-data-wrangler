@@ -1059,7 +1059,7 @@ def _copy_parquet_result(
     )
     if not keep_files:
         s3.delete_objects(
-            paths=paths,
+            path=paths,
             use_threads=use_threads,
             boto3_session=boto3_session,
             s3_additional_kwargs=s3_additional_kwargs,
@@ -1088,7 +1088,7 @@ def _copy_csv_result(
     )
     if not keep_files:
         s3.delete_objects(
-            paths=[path],
+            path=path,
             use_threads=use_threads,
             boto3_session=boto3_session,
             s3_additional_kwargs=s3_additional_kwargs,

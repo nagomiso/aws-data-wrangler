@@ -1095,6 +1095,7 @@ def _copy_csv_result(
         )
 
 
+@apply_configs
 def save_query_result(
     sql: str,
     database: str,
@@ -1112,6 +1113,14 @@ def save_query_result(
     params: Optional[Dict[str, Any]] = None,
     s3_additional_kwargs: Optional[Dict[str, Any]] = None,
 ) -> None:
+    if ctas_approach and data_source not in (None, "AwsDataCatalog"):
+        raise exceptions.InvalidArgumentCombination(
+            "Queries with ctas_approach=True (default) does not support "
+            "data_source values different than None and 'AwsDataCatalog'. "
+            "Please check the related tutorial for more details "
+            "(https://github.com/awslabs/aws-data-wrangler/blob/main/"
+            "tutorials/006%20-%20Amazon%20Athena.ipynb)"
+        )
     session: boto3.Session = _utils.ensure_session(session=boto3_session)
     if params is None:
         params = {}
@@ -1156,7 +1165,7 @@ def save_query_result(
         finally:
             catalog.delete_table_if_exists(database=database, table=name, boto3_session=session)
     else:
-        query_id: str = _start_query_execution(
+        query_id = _start_query_execution(
             sql=sql,
             wg_config=wg_config,
             database=database,
@@ -1167,7 +1176,7 @@ def save_query_result(
             kms_key=kms_key,
             boto3_session=session,
         )
-        query_metadata: _QueryMetadata = _get_query_metadata(
+        query_metadata = _get_query_metadata(
             query_execution_id=query_id,
             boto3_session=session,
         )

@@ -1,6 +1,7 @@
 """Amazon PostgreSQL Module."""
 
 import logging
+from ssl import SSLContext
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import boto3
@@ -11,6 +12,7 @@ import pyarrow as pa
 from awswrangler import _data_types
 from awswrangler import _databases as _db_utils
 from awswrangler import exceptions
+from awswrangler._config import apply_configs
 
 _logger: logging.Logger = logging.getLogger(__name__)
 
@@ -76,7 +78,7 @@ def connect(
     catalog_id: Optional[str] = None,
     dbname: Optional[str] = None,
     boto3_session: Optional[boto3.Session] = None,
-    ssl_context: Optional[Dict[Any, Any]] = None,
+    ssl_context: Optional[Union[bool, SSLContext]] = None,
     timeout: Optional[int] = None,
     tcp_keepalive: bool = True,
 ) -> pg8000.Connection:
@@ -98,7 +100,7 @@ def connect(
         Optional database name to overwrite the stored one.
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
-    ssl_context: Optional[Dict]
+    ssl_context: Optional[Union[bool, SSLContext]]
         This governs SSL encryption for TCP/IP sockets.
         This parameter is forward to pg8000.
         https://github.com/tlocke/pg8000#functions
@@ -130,7 +132,7 @@ def connect(
     attrs: _db_utils.ConnectionAttributes = _db_utils.get_connection_attributes(
         connection=connection, secret_id=secret_id, catalog_id=catalog_id, dbname=dbname, boto3_session=boto3_session
     )
-    if attrs.kind != "postgresql":
+    if attrs.kind != "postgresql" and attrs.kind != "postgres":
         raise exceptions.InvalidDatabaseType(
             f"Invalid connection type ({attrs.kind}. It must be a postgresql connection.)"
         )
@@ -263,6 +265,7 @@ def read_sql_table(
     )
 
 
+@apply_configs
 def to_sql(
     df: pd.DataFrame,
     con: pg8000.Connection,
@@ -272,6 +275,8 @@ def to_sql(
     index: bool = False,
     dtype: Optional[Dict[str, str]] = None,
     varchar_lengths: Optional[Dict[str, int]] = None,
+    use_column_names: bool = False,
+    chunksize: int = 200,
 ) -> None:
     """Write records stored in a DataFrame into PostgreSQL.
 
@@ -296,6 +301,12 @@ def to_sql(
         (e.g. {'col name': 'TEXT', 'col2 name': 'FLOAT'})
     varchar_lengths : Dict[str, int], optional
         Dict of VARCHAR length by columns. (e.g. {"col1": 10, "col5": 200}).
+    use_column_names: bool
+        If set to True, will use the column names of the DataFrame for generating the INSERT SQL Query.
+        E.g. If the DataFrame has two columns `col1` and `col3` and `use_column_names` is True, data will only be
+        inserted into the database columns `col1` and `col3`.
+    chunksize: int
+        Number of rows which are inserted with each SQL query. Defaults to inserting 200 rows per query.
 
     Returns
     -------
@@ -334,11 +345,17 @@ def to_sql(
             )
             if index:
                 df.reset_index(level=df.index.names, inplace=True)
-            placeholders: str = ", ".join(["%s"] * len(df.columns))
-            sql: str = f'INSERT INTO "{schema}"."{table}" VALUES ({placeholders})'
-            _logger.debug("sql: %s", sql)
-            parameters: List[List[Any]] = _db_utils.extract_parameters(df=df)
-            cursor.executemany(sql, parameters)
+            column_placeholders: str = ", ".join(["%s"] * len(df.columns))
+            insertion_columns = ""
+            if use_column_names:
+                insertion_columns = f"({', '.join(df.columns)})"
+            placeholder_parameter_pair_generator = _db_utils.generate_placeholder_parameter_pairs(
+                df=df, column_placeholders=column_placeholders, chunksize=chunksize
+            )
+            for placeholders, parameters in placeholder_parameter_pair_generator:
+                sql: str = f'INSERT INTO "{schema}"."{table}" {insertion_columns} VALUES {placeholders}'
+                _logger.debug("sql: %s", sql)
+                cursor.executemany(sql, (parameters,))
             con.commit()
     except Exception as ex:
         con.rollback()

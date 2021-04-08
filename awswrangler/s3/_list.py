@@ -146,7 +146,7 @@ def does_object_exist(
     path: str
         S3 path (e.g. s3://bucket/key).
     s3_additional_kwargs : Optional[Dict[str, Any]]
-        Forward to botocore requests. Valid parameters: "RequestPayer".
+        Forward to botocore requests. Valid parameters: "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
@@ -203,13 +203,15 @@ def list_directories(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Parameters
     ----------
     path : str
         S3 path (e.g. s3://bucket/prefix).
     s3_additional_kwargs : Optional[Dict[str, Any]]
-        Forward to botocore requests. Valid parameters: "RequestPayer".
+        Forward to botocore requests. Valid parameters: "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
@@ -255,6 +257,8 @@ def list_objects(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -277,7 +281,7 @@ def list_objects(
     ignore_empty: bool
         Ignore files with 0 bytes.
     s3_additional_kwargs : Optional[Dict[str, Any]]
-        Forward to botocore requests. Valid parameters: "RequestPayer".
+        Forward to botocore requests. Valid parameters: "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.

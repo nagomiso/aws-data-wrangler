@@ -164,6 +164,8 @@ def read_csv(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -215,7 +217,7 @@ def read_csv(
         This function MUST return a bool, True to read the partition or False to ignore it.
         Ignored if `dataset=False`.
         E.g ``lambda x: True if x["year"] == "2020" and x["month"] == "1" else False``
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/023%20-%20Flexible%20Partitions%20Filter.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/023%20-%20Flexible%20Partitions%20Filter.html
     pandas_kwargs :
         KEYWORD arguments forwarded to pandas.read_csv(). You can NOT pass `pandas_kwargs` explicit, just add valid
         Pandas arguments in the function call and Wrangler will accept it.
@@ -304,6 +306,8 @@ def read_fwf(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -355,7 +359,7 @@ def read_fwf(
         This function MUST return a bool, True to read the partition or False to ignore it.
         Ignored if `dataset=False`.
         E.g ``lambda x: True if x["year"] == "2020" and x["month"] == "1" else False``
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/023%20-%20Flexible%20Partitions%20Filter.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/023%20-%20Flexible%20Partitions%20Filter.html
     pandas_kwargs:
         KEYWORD arguments forwarded to pandas.read_fwf(). You can NOT pass `pandas_kwargs` explicit, just add valid
         Pandas arguments in the function call and Wrangler will accept it.
@@ -445,6 +449,8 @@ def read_json(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -499,7 +505,7 @@ def read_json(
         This function MUST return a bool, True to read the partition or False to ignore it.
         Ignored if `dataset=False`.
         E.g ``lambda x: True if x["year"] == "2020" and x["month"] == "1" else False``
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/023%20-%20Flexible%20Partitions%20Filter.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/023%20-%20Flexible%20Partitions%20Filter.html
     pandas_kwargs:
         KEYWORD arguments forwarded to pandas.read_json(). You can NOT pass `pandas_kwargs` explicit, just add valid
         Pandas arguments in the function call and Wrangler will accept it.

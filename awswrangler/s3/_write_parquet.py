@@ -198,7 +198,7 @@ def _to_parquet(
 @apply_configs
 def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
     df: pd.DataFrame,
-    path: str,
+    path: Optional[str] = None,
     index: bool = False,
     compression: Optional[str] = "snappy",
     max_rows_by_file: Optional[int] = None,
@@ -252,8 +252,9 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
     ----------
     df: pandas.DataFrame
         Pandas DataFrame https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.html
-    path : str
+    path : str, optional
         S3 path (for file e.g. ``s3://bucket/prefix/filename.parquet``) (for dataset e.g. ``s3://bucket/prefix``).
+        Required if dataset=False or when dataset=True and creating a new dataset
     index : bool
         True to store the DataFrame index in file, otherwise False to ignore it.
     compression: str, optional
@@ -269,7 +270,8 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
     s3_additional_kwargs : Optional[Dict[str, Any]]
         Forward to botocore requests. Valid parameters: "ACL", "Metadata", "ServerSideEncryption", "StorageClass",
-        "SSECustomerAlgorithm", "SSECustomerKey", "SSEKMSKeyId", "SSEKMSEncryptionContext", "Tagging", "RequestPayer".
+        "SSECustomerAlgorithm", "SSECustomerKey", "SSEKMSKeyId", "SSEKMSEncryptionContext", "Tagging",
+        "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'ServerSideEncryption': 'aws:kms', 'SSEKMSKeyId': 'YOUR_KMS_KEY_ARN'}
     sanitize_columns : bool
         True to sanitize columns names (using `wr.catalog.sanitize_table_name` and `wr.catalog.sanitize_column_name`)
@@ -290,18 +292,18 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
     concurrent_partitioning: bool
         If True will increase the parallelism level during the partitions writing. It will decrease the
         writing time and increase the memory usage.
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/022%20-%20Writing%20Partitions%20Concurrently.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/022%20-%20Writing%20Partitions%20Concurrently.html
     mode: str, optional
         ``append`` (Default), ``overwrite``, ``overwrite_partitions``. Only takes effect if dataset=True.
         For details check the related tutorial:
-        https://aws-data-wrangler.readthedocs.io/en/2.4.0-docs/stubs/awswrangler.s3.to_parquet.html#awswrangler.s3.to_parquet
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/stubs/awswrangler.s3.to_parquet.html#awswrangler.s3.to_parquet
     catalog_versioning : bool
         If True and `mode="overwrite"`, creates an archived version of the table catalog before updating it.
     schema_evolution : bool
         If True allows schema evolution (new or missing columns), otherwise a exception will be raised.
         (Only considered if dataset=True and mode in ("append", "overwrite_partitions"))
         Related tutorial:
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/014%20-%20Schema%20Evolution.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/014%20-%20Schema%20Evolution.html
     database : str, optional
         Glue/Athena catalog: Database name.
     table : str, optional
@@ -510,6 +512,19 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
         catalog_table_input = catalog._get_table_input(  # pylint: disable=protected-access
             database=database, table=table, boto3_session=session, catalog_id=catalog_id
         )
+        catalog_path = catalog_table_input["StorageDescriptor"]["Location"] if catalog_table_input else None
+        if path is None:
+            if catalog_path:
+                path = catalog_path
+            else:
+                raise exceptions.InvalidArgumentValue(
+                    "Glue table does not exist in the catalog. Please pass the `path` argument to create it."
+                )
+        elif path and catalog_path:
+            if path.rstrip("/") != catalog_path.rstrip("/"):
+                raise exceptions.InvalidArgumentValue(
+                    f"The specified path: {path}, does not match the existing Glue catalog table path: {catalog_path}"
+                )
     df = _apply_dtype(df=df, dtype=dtype, catalog_table_input=catalog_table_input, mode=mode)
     schema: pa.Schema = _data_types.pyarrow_schema_from_pandas(
         df=df, index=index, ignore_cols=partition_cols, dtype=dtype
@@ -544,7 +559,7 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
             func=_to_parquet,
             concurrent_partitioning=concurrent_partitioning,
             df=df,
-            path_root=path,
+            path_root=path,  # type: ignore
             index=index,
             compression=compression,
             compression_ext=compression_ext,
@@ -564,7 +579,7 @@ def to_parquet(  # pylint: disable=too-many-arguments,too-many-locals
                 catalog._create_parquet_table(  # pylint: disable=protected-access
                     database=database,
                     table=table,
-                    path=path,
+                    path=path,  # type: ignore
                     columns_types=columns_types,
                     partitions_types=partitions_types,
                     bucketing_info=bucketing_info,
@@ -649,6 +664,8 @@ def store_parquet_metadata(  # pylint: disable=too-many-arguments
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -736,7 +753,8 @@ def store_parquet_metadata(  # pylint: disable=too-many-arguments
         (e.g. {'col_name': '1', 'col2_name': '2'})
     s3_additional_kwargs : Optional[Dict[str, Any]]
         Forward to botocore requests. Valid parameters: "ACL", "Metadata", "ServerSideEncryption", "StorageClass",
-        "SSECustomerAlgorithm", "SSECustomerKey", "SSEKMSKeyId", "SSEKMSEncryptionContext", "Tagging", "RequestPayer".
+        "SSECustomerAlgorithm", "SSECustomerKey", "SSEKMSKeyId", "SSEKMSEncryptionContext", "Tagging",
+        "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'ServerSideEncryption': 'aws:kms', 'SSEKMSKeyId': 'YOUR_KMS_KEY_ARN'}
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.

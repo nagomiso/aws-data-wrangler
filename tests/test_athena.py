@@ -26,7 +26,7 @@ from ._utils import (
 logging.getLogger("awswrangler").setLevel(logging.DEBUG)
 
 
-def test_athena_ctas(path, path2, path3, glue_table, glue_table2, glue_database, kms_key):
+def test_athena_ctas(path, path2, path3, glue_table, glue_table2, glue_database, glue_ctas_database, kms_key):
     df = get_df_list()
     columns_types, partitions_types = wr.catalog.extract_athena_types(df=df, partition_cols=["par0", "par1"])
     assert len(columns_types) == 17
@@ -102,10 +102,29 @@ def test_athena_ctas(path, path2, path3, glue_table, glue_table2, glue_database,
         ensure_athena_query_metadata(df=df, ctas_approach=True, encrypted=False)
     assert len(wr.s3.list_objects(path=path3)) > 2
 
+    # ctas_database_name
+    wr.s3.delete_objects(path=path3)
+    dfs = wr.athena.read_sql_query(
+        sql=f"SELECT * FROM {glue_table}",
+        database=glue_database,
+        ctas_approach=True,
+        chunksize=1,
+        keep_files=False,
+        ctas_database_name=glue_ctas_database,
+        ctas_temp_table_name=glue_table2,
+        s3_output=path3,
+    )
+    assert wr.catalog.does_table_exist(database=glue_ctas_database, table=glue_table2) is True
+    assert len(wr.s3.list_objects(path=path3)) > 2
+    assert len(wr.s3.list_objects(path=final_destination)) > 0
+    for df in dfs:
+        ensure_data_types(df=df, has_list=True)
+        ensure_athena_query_metadata(df=df, ctas_approach=True, encrypted=False)
+    assert len(wr.s3.list_objects(path=path3)) == 0
+
 
 def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1):
-    table = f"__{glue_table}"
-    wr.catalog.delete_table_if_exists(database=glue_database, table=table)
+    wr.catalog.delete_table_if_exists(database=glue_database, table=glue_table)
     wr.s3.to_parquet(
         df=get_df(),
         path=path,
@@ -114,11 +133,11 @@ def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1
         dataset=True,
         mode="overwrite",
         database=glue_database,
-        table=table,
+        table=glue_table,
         partition_cols=["par0", "par1"],
     )
     dfs = wr.athena.read_sql_query(
-        sql=f"SELECT * FROM {table}",
+        sql=f"SELECT * FROM {glue_table}",
         database=glue_database,
         ctas_approach=False,
         chunksize=1,
@@ -131,7 +150,7 @@ def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1
         ensure_data_types(df=df2)
         ensure_athena_query_metadata(df=df2, ctas_approach=False, encrypted=False)
     df = wr.athena.read_sql_query(
-        sql=f"SELECT * FROM {table}",
+        sql=f"SELECT * FROM {glue_table}",
         database=glue_database,
         ctas_approach=False,
         workgroup=workgroup1,
@@ -140,14 +159,14 @@ def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1
     assert len(df.index) == 3
     ensure_data_types(df=df)
     ensure_athena_query_metadata(df=df, ctas_approach=False, encrypted=False)
-    wr.athena.repair_table(table=table, database=glue_database)
-    assert len(wr.athena.describe_table(database=glue_database, table=table).index) > 0
+    wr.athena.repair_table(table=glue_table, database=glue_database)
+    assert len(wr.athena.describe_table(database=glue_database, table=glue_table).index) > 0
     assert (
-        wr.catalog.table(database=glue_database, table=table).to_dict()
-        == wr.athena.describe_table(database=glue_database, table=table).to_dict()
+        wr.catalog.table(database=glue_database, table=glue_table).to_dict()
+        == wr.athena.describe_table(database=glue_database, table=glue_table).to_dict()
     )
     df = wr.athena.read_sql_query(
-        sql=f"SELECT * FROM {table} WHERE iint8 = :iint8_value;",
+        sql=f"SELECT * FROM {glue_table} WHERE iint8 = :iint8_value;",
         database=glue_database,
         ctas_approach=False,
         workgroup=workgroup1,
@@ -156,9 +175,9 @@ def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1
     )
     assert len(df.index) == 1
     ensure_athena_query_metadata(df=df, ctas_approach=False, encrypted=False)
-    query = wr.athena.show_create_table(database=glue_database, table=table)
+    query = wr.athena.show_create_table(database=glue_database, table=glue_table)
     assert (
-        query.split("LOCATION")[0] == f"CREATE EXTERNAL TABLE `{table}`"
+        query.split("LOCATION")[0] == f"CREATE EXTERNAL TABLE `{glue_table}`"
         f"( `iint8` tinyint,"
         f" `iint16` smallint,"
         f" `iint32` int,"
@@ -179,7 +198,6 @@ def test_athena(path, glue_database, glue_table, kms_key, workgroup0, workgroup1
         f"STORED AS INPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat' "
         f"OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat' "
     )
-    wr.catalog.delete_table_if_exists(database=glue_database, table=table)
 
 
 def test_catalog(path: str, glue_database: str, glue_table: str) -> None:

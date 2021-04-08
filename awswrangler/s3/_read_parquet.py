@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import datetime
+import functools
 import itertools
 import json
 import logging
@@ -238,6 +239,7 @@ def _arrowtable2df(
     table: pa.Table,
     categories: Optional[List[str]],
     safe: bool,
+    map_types: bool,
     use_threads: bool,
     dataset: bool,
     path: str,
@@ -257,7 +259,7 @@ def _arrowtable2df(
             strings_to_categorical=False,
             safe=safe,
             categories=categories,
-            types_mapper=_data_types.pyarrow2pandas_extension,
+            types_mapper=_data_types.pyarrow2pandas_extension if map_types else None,
         ),
         dataset=dataset,
         path=path,
@@ -266,8 +268,8 @@ def _arrowtable2df(
     df = _utils.ensure_df_is_mutable(df=df)
     if metadata:
         _logger.debug("metadata: %s", metadata)
-        df = _apply_index(df=df, metadata=metadata)
         df = _apply_timezone(df=df, metadata=metadata)
+        df = _apply_index(df=df, metadata=metadata)
     return df
 
 
@@ -279,6 +281,7 @@ def _read_parquet_chunked(
     columns: Optional[List[str]],
     categories: Optional[List[str]],
     safe: bool,
+    map_types: bool,
     boto3_session: boto3.Session,
     dataset: bool,
     path_root: Optional[str],
@@ -325,6 +328,7 @@ def _read_parquet_chunked(
                     ),
                     categories=categories,
                     safe=safe,
+                    map_types=map_types,
                     use_threads=use_threads,
                     dataset=dataset,
                     path=path,
@@ -336,8 +340,8 @@ def _read_parquet_chunked(
                     if next_slice is not None:
                         df = _union(dfs=[next_slice, df], ignore_index=ignore_index)
                     while len(df.index) >= chunked:
-                        yield df.iloc[:chunked]
-                        df = df.iloc[chunked:]
+                        yield df.iloc[:chunked, :].copy()
+                        df = df.iloc[chunked:, :]
                     if df.empty:
                         next_slice = None
                     else:
@@ -404,6 +408,7 @@ def _read_parquet(
     columns: Optional[List[str]],
     categories: Optional[List[str]],
     safe: bool,
+    map_types: bool,
     boto3_session: boto3.Session,
     dataset: bool,
     path_root: Optional[str],
@@ -421,6 +426,7 @@ def _read_parquet(
         ),
         categories=categories,
         safe=safe,
+        map_types=map_types,
         use_threads=use_threads,
         dataset=dataset,
         path=path,
@@ -441,6 +447,7 @@ def read_parquet(
     dataset: bool = False,
     categories: Optional[List[str]] = None,
     safe: bool = True,
+    map_types: bool = True,
     use_threads: bool = True,
     last_modified_begin: Optional[datetime.datetime] = None,
     last_modified_end: Optional[datetime.datetime] = None,
@@ -455,6 +462,8 @@ def read_parquet(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----
@@ -522,6 +531,10 @@ def read_parquet(
         data in a pandas DataFrame or Series (e.g. timestamps are always
         stored as nanoseconds in pandas). This option controls whether it
         is a safe cast or not.
+    map_types : bool, default True
+        True to convert pyarrow DataTypes to pandas ExtensionDtypes. It is
+        used to override the default pandas type for conversion of built-in
+        pyarrow types or in absence of pandas_metadata in the Table schema.
     use_threads : bool
         True to enable concurrent requests, False to disable multiple threads.
         If enabled os.cpu_count() will be used as the max number of threads.
@@ -595,6 +608,7 @@ def read_parquet(
         "columns": columns,
         "categories": categories,
         "safe": safe,
+        "map_types": map_types,
         "boto3_session": session,
         "dataset": dataset,
         "path_root": path_root,
@@ -631,6 +645,7 @@ def read_parquet_table(
     validate_schema: bool = True,
     categories: Optional[List[str]] = None,
     safe: bool = True,
+    map_types: bool = True,
     chunked: Union[bool, int] = False,
     use_threads: bool = True,
     boto3_session: Optional[boto3.Session] = None,
@@ -682,7 +697,7 @@ def read_parquet_table(
         This function MUST return a bool, True to read the partition or False to ignore it.
         Ignored if `dataset=False`.
         E.g ``lambda x: True if x["year"] == "2020" and x["month"] == "1" else False``
-        https://github.com/awslabs/aws-data-wrangler/blob/main/tutorials/023%20-%20Flexible%20Partitions%20Filter.ipynb
+        https://aws-data-wrangler.readthedocs.io/en/2.6.0/tutorials/023%20-%20Flexible%20Partitions%20Filter.html
     columns : List[str], optional
         Names of columns to read from the file(s).
     validate_schema:
@@ -697,6 +712,10 @@ def read_parquet_table(
         data in a pandas DataFrame or Series (e.g. timestamps are always
         stored as nanoseconds in pandas). This option controls whether it
         is a safe cast or not.
+    map_types : bool, default True
+        True to convert pyarrow DataTypes to pandas ExtensionDtypes. It is
+        used to override the default pandas type for conversion of built-in
+        pyarrow types or in absence of pandas_metadata in the Table schema.
     chunked : bool
         If True will break the data in smaller DataFrames (Non deterministic number of lines).
         Otherwise return a single DataFrame with the whole data.
@@ -755,24 +774,31 @@ def read_parquet_table(
         path: str = res["Table"]["StorageDescriptor"]["Location"]
     except KeyError as ex:
         raise exceptions.InvalidTable(f"Missing s3 location for {database}.{table}.") from ex
-    return _data_types.cast_pandas_with_athena_types(
-        df=read_parquet(
-            path=path,
-            path_suffix=filename_suffix,
-            path_ignore_suffix=filename_ignore_suffix,
-            partition_filter=partition_filter,
-            columns=columns,
-            validate_schema=validate_schema,
-            categories=categories,
-            safe=safe,
-            chunked=chunked,
-            dataset=True,
-            use_threads=use_threads,
-            boto3_session=boto3_session,
-            s3_additional_kwargs=s3_additional_kwargs,
-        ),
-        dtype=_extract_partitions_dtypes_from_table_details(response=res),
+    df = read_parquet(
+        path=path,
+        path_suffix=filename_suffix,
+        path_ignore_suffix=filename_ignore_suffix,
+        partition_filter=partition_filter,
+        columns=columns,
+        validate_schema=validate_schema,
+        categories=categories,
+        safe=safe,
+        map_types=map_types,
+        chunked=chunked,
+        dataset=True,
+        use_threads=use_threads,
+        boto3_session=boto3_session,
+        s3_additional_kwargs=s3_additional_kwargs,
     )
+    partial_cast_function = functools.partial(
+        _data_types.cast_pandas_with_athena_types, dtype=_extract_partitions_dtypes_from_table_details(response=res)
+    )
+
+    if isinstance(df, pd.DataFrame):
+        return partial_cast_function(df)
+
+    # df is a generator, so map is needed for casting dtypes
+    return map(partial_cast_function, df)
 
 
 @apply_configs
@@ -796,6 +822,8 @@ def read_parquet_metadata(
     This function accepts Unix shell-style wildcards in the path argument.
     * (matches everything), ? (matches any single character),
     [seq] (matches any character in seq), [!seq] (matches any character not in seq).
+    If you want to use a path which includes Unix shell-style wildcard characters (`*, ?, []`),
+    you can use `glob.escape(path)` before passing the path to this function.
 
     Note
     ----

@@ -375,12 +375,24 @@ def _resolve_query_without_cache_ctas(
     workgroup: Optional[str],
     kms_key: Optional[str],
     wg_config: _WorkGroupConfig,
-    name: str,
+    alt_database: Optional[str],
+    name: Optional[str],
     use_threads: bool,
     s3_additional_kwargs: Optional[Dict[str, Any]],
     boto3_session: boto3.Session,
 ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
-    sql = _convert_to_ctas_query(base_sql=sql, table_name=name, s3_output=s3_output, wg_config=wg_config)
+    path: str = f"{s3_output}/{name}"
+    ext_location: str = "\n" if wg_config.enforced is True else f",\n    external_location = '{path}'\n"
+    fully_qualified_name: str = f'"{alt_database}"."{name}"' if alt_database else f'"{database}"."{name}"'
+    sql = (
+        f"CREATE TABLE {fully_qualified_name}\n"
+        f"WITH(\n"
+        f"    format = 'Parquet',\n"
+        f"    parquet_compression = 'SNAPPY'"
+        f"{ext_location}"
+        f") AS\n"
+        f"{sql}"
+    )
     _logger.debug("sql: %s", sql)
     try:
         query_id: str = _start_query_execution(
@@ -498,6 +510,7 @@ def _resolve_query_without_cache(
     encryption: Optional[str],
     kms_key: Optional[str],
     keep_files: bool,
+    ctas_database_name: Optional[str],
     ctas_temp_table_name: Optional[str],
     use_threads: bool,
     s3_additional_kwargs: Optional[Dict[str, Any]],
@@ -529,6 +542,7 @@ def _resolve_query_without_cache(
                 workgroup=workgroup,
                 kms_key=kms_key,
                 wg_config=wg_config,
+                alt_database=ctas_database_name,
                 name=name,
                 use_threads=use_threads,
                 s3_additional_kwargs=s3_additional_kwargs,
@@ -566,6 +580,7 @@ def read_sql_query(
     encryption: Optional[str] = None,
     kms_key: Optional[str] = None,
     keep_files: bool = True,
+    ctas_database_name: Optional[str] = None,
     ctas_temp_table_name: Optional[str] = None,
     use_threads: bool = True,
     boto3_session: Optional[boto3.Session] = None,
@@ -581,12 +596,12 @@ def read_sql_query(
 
     **Related tutorial:**
 
-    - `Amazon Athena <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/006%20-%20Amazon%20Athena.ipynb>`_
-    - `Athena Cache <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/019%20-%20Athena%20Cache.ipynb>`_
-    - `Global Configurations <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/021%20-%20Global%20Configurations.ipynb>`_
+    - `Amazon Athena <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/006%20-%20Amazon%20Athena.html>`_
+    - `Athena Cache <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/019%20-%20Athena%20Cache.html>`_
+    - `Global Configurations <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/021%20-%20Global%20Configurations.html>`_
 
     **There are two approaches to be defined through ctas_approach parameter:**
 
@@ -633,8 +648,8 @@ def read_sql_query(
     /athena.html#Athena.Client.get_query_execution>`_ .
 
     For a practical example check out the
-    `related tutorial <https://github.com/awslabs/aws-data-wrangler/blob/
-    main/tutorials/024%20-%20Athena%20Query%20Metadata.ipynb>`_!
+    `related tutorial <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+    tutorials/024%20-%20Athena%20Query%20Metadata.html>`_!
 
 
     Note
@@ -700,6 +715,9 @@ def read_sql_query(
         For SSE-KMS, this is the KMS key ARN or ID.
     keep_files : bool
         Should Wrangler delete or keep the staging files produced by Athena?
+    ctas_database_name : str, optional
+        The name of the alternative database where the CTAS temporary table is stored.
+        If None, the default `database` is used.
     ctas_temp_table_name : str, optional
         The name of the temporary table and also the directory name on S3 where the CTAS result is stored.
         If None, it will use the follow random pattern: `f"temp_table_{uuid.uuid4().hex()}"`.
@@ -734,9 +752,9 @@ def read_sql_query(
     params: Dict[str, any], optional
         Dict of parameters that will be used for constructing the SQL query. Only named parameters are supported.
         The dict needs to contain the information in the form {'name': 'value'} and the SQL query needs to contain
-        `:name;`.
+        `:name;`. Note that for varchar columns and similar, you must surround the value in single quotes.
     s3_additional_kwargs : Optional[Dict[str, Any]]
-        Forward to botocore requests. Valid parameters: "RequestPayer".
+        Forward to botocore requests. Valid parameters: "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
 
     Returns
@@ -752,8 +770,8 @@ def read_sql_query(
 
     >>> import awswrangler as wr
     >>> df = wr.athena.read_sql_query(
-    ...     sql="SELECT * FROM my_table WHERE name=:name;",
-    ...     params={"name": "filtered_name"}
+    ...     sql="SELECT * FROM my_table WHERE name=:name; AND city=:city;",
+    ...     params={"name": "'filtered_name'", "city": "'filtered_city'"}
     ... )
 
     """
@@ -811,6 +829,7 @@ def read_sql_query(
         encryption=encryption,
         kms_key=kms_key,
         keep_files=keep_files,
+        ctas_database_name=ctas_database_name,
         ctas_temp_table_name=ctas_temp_table_name,
         use_threads=use_threads,
         s3_additional_kwargs=s3_additional_kwargs,
@@ -830,6 +849,7 @@ def read_sql_table(
     encryption: Optional[str] = None,
     kms_key: Optional[str] = None,
     keep_files: bool = True,
+    ctas_database_name: Optional[str] = None,
     ctas_temp_table_name: Optional[str] = None,
     use_threads: bool = True,
     boto3_session: Optional[boto3.Session] = None,
@@ -844,12 +864,12 @@ def read_sql_table(
 
     **Related tutorial:**
 
-    - `Amazon Athena <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/006%20-%20Amazon%20Athena.ipynb>`_
-    - `Athena Cache <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/019%20-%20Athena%20Cache.ipynb>`_
-    - `Global Configurations <https://github.com/awslabs/aws-data-wrangler/blob/
-      main/tutorials/021%20-%20Global%20Configurations.ipynb>`_
+    - `Amazon Athena <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/006%20-%20Amazon%20Athena.html>`_
+    - `Athena Cache <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/019%20-%20Athena%20Cache.html>`_
+    - `Global Configurations <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+      tutorials/021%20-%20Global%20Configurations.html>`_
 
     **There are two approaches to be defined through ctas_approach parameter:**
 
@@ -893,8 +913,8 @@ def read_sql_table(
     /athena.html#Athena.Client.get_query_execution>`_ .
 
     For a practical example check out the
-    `related tutorial <https://github.com/awslabs/aws-data-wrangler/blob/main/
-    tutorials/024%20-%20Athena%20Query%20Metadata.ipynb>`_!
+    `related tutorial <https://aws-data-wrangler.readthedocs.io/en/2.6.0/
+    tutorials/024%20-%20Athena%20Query%20Metadata.html>`_!
 
 
     Note
@@ -958,6 +978,9 @@ def read_sql_table(
         For SSE-KMS, this is the KMS key ARN or ID.
     keep_files : bool
         Should Wrangler delete or keep the staging files produced by Athena?
+    ctas_database_name : str, optional
+        The name of the alternative database where the CTAS temporary table is stored.
+        If None, the default `database` is used.
     ctas_temp_table_name : str, optional
         The name of the temporary table and also the directory name on S3 where the CTAS result is stored.
         If None, it will use the follow random pattern: `f"temp_table_{uuid.uuid4().hex}"`.
@@ -990,7 +1013,7 @@ def read_sql_table(
     data_source : str, optional
         Data Source / Catalog name. If None, 'AwsDataCatalog' will be used by default.
     s3_additional_kwargs : Optional[Dict[str, Any]]
-        Forward to botocore requests. Valid parameters: "RequestPayer".
+        Forward to botocore requests. Valid parameters: "RequestPayer", "ExpectedBucketOwner".
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
 
     Returns
@@ -1018,6 +1041,7 @@ def read_sql_table(
         encryption=encryption,
         kms_key=kms_key,
         keep_files=keep_files,
+        ctas_database_name=ctas_database_name,
         ctas_temp_table_name=ctas_temp_table_name,
         use_threads=use_threads,
         boto3_session=boto3_session,

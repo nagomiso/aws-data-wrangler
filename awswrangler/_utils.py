@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from awswrangler import _config, exceptions
+from awswrangler.__metadata__ import __version__
 from awswrangler._config import apply_configs
 
 _logger: logging.Logger = logging.getLogger(__name__)
@@ -68,7 +69,12 @@ def default_botocore_config() -> botocore.config.Config:
     mode: Optional[str] = os.getenv("AWS_RETRY_MODE")
     if mode:
         retries_config["mode"] = mode
-    return botocore.config.Config(retries=retries_config, connect_timeout=10, max_pool_connections=10)
+    return botocore.config.Config(
+        retries=retries_config,
+        connect_timeout=10,
+        max_pool_connections=10,
+        user_agent_extra=f"awswrangler/{__version__}",
+    )
 
 
 def _get_endpoint_url(service_name: str) -> Optional[str]:
@@ -327,6 +333,7 @@ def try_it(
             delay = random.uniform(base, delay * 3)
             _logger.error("Retrying %s | Fail number %s/%s | Exception: %s", f, i + 1, max_num_tries, exception)
             time.sleep(delay)
+    raise RuntimeError()
 
 
 def get_even_chunks_sizes(total_size: int, chunk_size: int, upper_bound: bool) -> Tuple[int, ...]:
